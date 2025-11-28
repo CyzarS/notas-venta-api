@@ -1,0 +1,167 @@
+name: Deploy Infrastructure (AWS Academy)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expediente:
+        description: 'Tu número de expediente (ej: A01234567)'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-docker-images:
+    name: 🐳 Build Docker Images
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Build imagen Docker - Catálogos
+        run: |
+          echo "🐳 Construyendo imagen Docker para modulo-catalogos..."
+          docker build -t notas-venta-catalogos:latest modulo-catalogos/
+          echo "✅ Imagen construida exitosamente"
+          docker images | grep notas-venta-catalogos
+
+      - name: Build imagen Docker - Notas
+        run: |
+          echo "🐳 Construyendo imagen Docker para modulo-notas..."
+          docker build -t notas-venta-notas:latest modulo-notas/
+          echo "✅ Imagen construida exitosamente"
+          docker images | grep notas-venta-notas
+
+      - name: Build imagen Docker - Notificaciones
+        run: |
+          echo "🐳 Construyendo imagen Docker para modulo-notificaciones..."
+          docker build -t notas-venta-notificaciones:latest modulo-notificaciones/
+          echo "✅ Imagen construida exitosamente"
+          docker images | grep notas-venta-notificaciones
+
+      - name: Resumen de imágenes construidas
+        run: |
+          echo "## 🐳 Imágenes Docker Construidas" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Imagen | Tag | Tamaño |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          docker images --format "| {{.Repository}} | {{.Tag}} | {{.Size}} |" | grep notas-venta >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Nota AWS Academy**: Las imágenes se construyen pero no se suben a ECR debido a restricciones del Learner Lab." >> $GITHUB_STEP_SUMMARY
+
+  deploy-infrastructure:
+    name: 🚀 Deploy to AWS Lambda
+    needs: build-docker-images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configurar AWS Credentials (Academy)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Empaquetar Lambda - Catálogos
+        run: |
+          echo "📦 Empaquetando modulo-catalogos..."
+          cd modulo-catalogos
+          pip install -r requirements.txt -t package/ --quiet
+          cp -r src/* package/
+          cd package && zip -r ../../catalogos-lambda.zip . -q
+          cd ../..
+          echo "✅ catalogos-lambda.zip creado ($(du -h catalogos-lambda.zip | cut -f1))"
+
+      - name: Empaquetar Lambda - Notas
+        run: |
+          echo "📦 Empaquetando modulo-notas..."
+          cd modulo-notas
+          pip install -r requirements.txt -t package/ --quiet
+          cp -r src/* package/
+          cd package && zip -r ../../notas-lambda.zip . -q
+          cd ../..
+          echo "✅ notas-lambda.zip creado ($(du -h notas-lambda.zip | cut -f1))"
+
+      - name: Empaquetar Lambda - Notificaciones
+        run: |
+          echo "📦 Empaquetando modulo-notificaciones..."
+          cd modulo-notificaciones
+          pip install -r requirements.txt -t package/ --quiet
+          cp -r src/* package/
+          cd package && zip -r ../../notificaciones-lambda.zip . -q
+          cd ../..
+          echo "✅ notificaciones-lambda.zip creado ($(du -h notificaciones-lambda.zip | cut -f1))"
+
+      - name: Crear bucket S3 para código
+        run: |
+          BUCKET_NAME="${{ github.event.inputs.expediente }}-lambda-code"
+          aws s3 mb s3://$BUCKET_NAME --region ${{ env.AWS_REGION }} 2>/dev/null || echo "Bucket ya existe"
+          echo "BUCKET_NAME=$BUCKET_NAME" >> $GITHUB_ENV
+
+      - name: Subir código a S3
+        run: |
+          echo "☁️ Subiendo código a S3..."
+          aws s3 cp catalogos-lambda.zip s3://$BUCKET_NAME/
+          aws s3 cp notas-lambda.zip s3://$BUCKET_NAME/
+          aws s3 cp notificaciones-lambda.zip s3://$BUCKET_NAME/
+          echo "✅ Código subido a s3://$BUCKET_NAME/"
+
+      - name: Deploy CloudFormation Stack
+        run: |
+          echo "🚀 Desplegando infraestructura..."
+          aws cloudformation deploy \
+            --template-file infrastructure/template-academy.yaml \
+            --stack-name notas-venta-stack \
+            --parameter-overrides \
+              Environment=production \
+              Expediente=${{ github.event.inputs.expediente }} \
+              CodeBucket=$BUCKET_NAME \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+          echo "✅ Stack desplegado exitosamente"
+
+      - name: Obtener y mostrar Outputs
+        run: |
+          echo "## 🚀 Despliegue Completado!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name notas-venta-stack \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \
+            --output text)
+          
+          DASHBOARD_URL=$(aws cloudformation describe-stacks \
+            --stack-name notas-venta-stack \
+            --query "Stacks[0].Outputs[?OutputKey=='DashboardUrl'].OutputValue" \
+            --output text)
+          
+          echo "### 🌐 API URL" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "$API_URL" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📊 Endpoints Disponibles" >> $GITHUB_STEP_SUMMARY
+          echo "| Método | Endpoint | Descripción |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|----------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| GET | ${API_URL}catalogos/health | Health check catálogos |" >> $GITHUB_STEP_SUMMARY
+          echo "| GET | ${API_URL}notas/health | Health check notas |" >> $GITHUB_STEP_SUMMARY
+          echo "| POST | ${API_URL}catalogos/clientes | Crear cliente |" >> $GITHUB_STEP_SUMMARY
+          echo "| GET | ${API_URL}catalogos/clientes | Listar clientes |" >> $GITHUB_STEP_SUMMARY
+          echo "| POST | ${API_URL}catalogos/productos | Crear producto |" >> $GITHUB_STEP_SUMMARY
+          echo "| POST | ${API_URL}notas | Crear nota de venta |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 📈 Dashboard CloudWatch" >> $GITHUB_STEP_SUMMARY
+          echo "[Ver Dashboard]($DASHBOARD_URL)" >> $GITHUB_STEP_SUMMARY

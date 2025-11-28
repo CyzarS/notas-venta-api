@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  notificaciones-lambda:
+    build: .
+    ports:
+      - "8003:8080"
+    environment:
+      - ENVIRONMENT=local
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - SES_SOURCE_EMAIL=${SES_SOURCE_EMAIL:-noreply@example.com}
+      - SES_CONFIGURATION_SET=${SES_CONFIGURATION_SET:-}
+    volumes:
+      - ./src:/var/task:ro
+    networks:
+      - notas-venta-network
+
+networks:
+  notas-venta-network:
+    external: true

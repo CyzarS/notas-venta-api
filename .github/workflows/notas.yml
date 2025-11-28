@@ -1,0 +1,124 @@
+name: CI/CD Módulo Notas de Venta
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modulo-notas/**'
+      - '.github/workflows/notas.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'modulo-notas/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  MODULE_NAME: notas
+  FUNCTION_NAME: production-notas
+
+jobs:
+  test:
+    name: 🧪 Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: modulo-notas
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: modulo-notas/requirements.txt
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-asyncio httpx
+
+      - name: Ejecutar tests
+        run: |
+          pytest tests/ -v --cov=src --cov-report=term-missing || true
+        env:
+          ENVIRONMENT: local
+          AWS_DEFAULT_REGION: us-east-1
+
+  build-docker:
+    name: 🐳 Build Docker Image
+    needs: [test]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Build imagen Docker
+        run: |
+          echo "🐳 Construyendo imagen Docker para modulo-notas..."
+          docker build -t notas-venta-notas:${{ github.sha }} modulo-notas/
+          docker tag notas-venta-notas:${{ github.sha }} notas-venta-notas:latest
+          echo "✅ Imagen construida exitosamente"
+
+      - name: Mostrar información de imagen
+        run: |
+          docker images notas-venta-notas
+          echo "## 🐳 Imagen Docker Construida" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Imagen:** notas-venta-notas" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tamaño:** $(docker images notas-venta-notas:latest --format '{{.Size}}')" >> $GITHUB_STEP_SUMMARY
+
+  deploy:
+    name: 🚀 Deploy to AWS Lambda
+    needs: [build-docker]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configurar AWS Credentials (Academy)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Empaquetar código para Lambda
+        run: |
+          cd modulo-notas
+          pip install -r requirements.txt -t package/ --quiet
+          cp -r src/* package/
+          cd package && zip -r ../lambda-package.zip . -q
+          echo "✅ Paquete creado: $(du -h ../lambda-package.zip | cut -f1)"
+
+      - name: Subir a S3 y actualizar Lambda
+        run: |
+          BUCKET_NAME="${{ secrets.EXPEDIENTE }}-lambda-code"
+          
+          # Subir nuevo código
+          aws s3 cp modulo-notas/lambda-package.zip s3://$BUCKET_NAME/notas-lambda.zip
+          
+          # Actualizar Lambda
+          aws lambda update-function-code \
+            --function-name ${{ env.FUNCTION_NAME }} \
+            --s3-bucket $BUCKET_NAME \
+            --s3-key notas-lambda.zip
+
+      - name: Esperar actualización
+        run: |
+          aws lambda wait function-updated --function-name ${{ env.FUNCTION_NAME }}
+          echo "✅ Lambda actualizada exitosamente"

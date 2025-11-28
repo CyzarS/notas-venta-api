@@ -1,0 +1,35 @@
+# Configuración de SAM para despliegue
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "notas-venta-stack"
+resolve_s3 = true
+s3_prefix = "notas-venta"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+confirm_changeset = true
+image_repositories = []
+
+[default.build.parameters]
+use_container = true
+cached = true
+parallel = true
+
+[production]
+[production.deploy.parameters]
+stack_name = "production-notas-venta-stack"
+parameter_overrides = "Environment=production"
+confirm_changeset = false
+
+[staging]
+[staging.deploy.parameters]
+stack_name = "staging-notas-venta-stack"
+parameter_overrides = "Environment=staging"
+confirm_changeset = true
+
+[development]
+[development.deploy.parameters]
+stack_name = "development-notas-venta-stack"
+parameter_overrides = "Environment=development"
+confirm_changeset = true

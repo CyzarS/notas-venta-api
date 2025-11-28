@@ -1,0 +1,535 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Sistema de Notas de Venta
+  Aplicación serverless con 3 módulos: Catálogos, Notas y Notificaciones
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - local
+      - development
+      - staging
+      - production
+    Description: Ambiente de despliegue
+  
+  Expediente:
+    Type: String
+    Default: A01234567
+    Description: Número de expediente del alumno
+  
+  SESSourceEmail:
+    Type: String
+    Default: noreply@example.com
+    Description: Email de origen para notificaciones SES
+  
+  ApiBaseUrl:
+    Type: String
+    Default: ""
+    Description: URL base de la API (se autocompleta si está vacío)
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 256
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        AWS_REGION_CUSTOM: !Ref AWS::Region
+
+Resources:
+  # ==================== TABLAS DYNAMODB ====================
+  
+  ClientesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Environment}-clientes"
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  DomiciliosTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Environment}-domicilios"
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ProductosTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Environment}-productos"
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  NotasVentaTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Environment}-notas-venta"
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  ContenidoNotasTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Environment}-contenido-notas"
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==================== BUCKET S3 ====================
+  
+  NotasPDFBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Expediente}-esi3898k-examen1"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==================== SNS TOPIC ====================
+  
+  NotificacionesTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${Environment}-notas-venta-notificaciones"
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==================== API GATEWAY ====================
+  
+  NotasVentaApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "${Environment}-notas-venta-api"
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+      Tags:
+        Environment: !Ref Environment
+
+  # ==================== LAMBDA FUNCTIONS ====================
+  
+  # Módulo de Catálogos
+  CatalogosFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Environment}-catalogos"
+      PackageType: Image
+      ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/notas-venta-catalogos:latest"
+      Environment:
+        Variables:
+          TABLE_CLIENTES: !Ref ClientesTable
+          TABLE_DOMICILIOS: !Ref DomiciliosTable
+          TABLE_PRODUCTOS: !Ref ProductosTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ClientesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DomiciliosTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProductosTable
+        - CloudWatchPutMetricPolicy: {}
+      Events:
+        ApiAny:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NotasVentaApi
+            Path: /catalogos/{proxy+}
+            Method: ANY
+        ApiRoot:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NotasVentaApi
+            Path: /catalogos
+            Method: ANY
+      Tags:
+        Environment: !Ref Environment
+    Metadata:
+      DockerTag: latest
+      DockerContext: ../modulo-catalogos
+      Dockerfile: Dockerfile
+
+  # Módulo de Notas de Venta
+  NotasFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Environment}-notas"
+      PackageType: Image
+      ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/notas-venta-notas:latest"
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          TABLE_NOTAS: !Ref NotasVentaTable
+          TABLE_CONTENIDO_NOTAS: !Ref ContenidoNotasTable
+          TABLE_CLIENTES: !Ref ClientesTable
+          TABLE_DOMICILIOS: !Ref DomiciliosTable
+          TABLE_PRODUCTOS: !Ref ProductosTable
+          S3_BUCKET: !Ref NotasPDFBucket
+          SNS_TOPIC_ARN: !Ref NotificacionesTopic
+          EXPEDIENTE: !Ref Expediente
+          API_BASE_URL: !If 
+            - HasApiBaseUrl
+            - !Ref ApiBaseUrl
+            - !Sub "https://${NotasVentaApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/notas"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NotasVentaTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ContenidoNotasTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ClientesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref DomiciliosTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ProductosTable
+        - S3CrudPolicy:
+            BucketName: !Ref NotasPDFBucket
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt NotificacionesTopic.TopicName
+        - CloudWatchPutMetricPolicy: {}
+      Events:
+        ApiAny:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NotasVentaApi
+            Path: /notas/{proxy+}
+            Method: ANY
+        ApiRoot:
+          Type: Api
+          Properties:
+            RestApiId: !Ref NotasVentaApi
+            Path: /notas
+            Method: ANY
+      Tags:
+        Environment: !Ref Environment
+    Metadata:
+      DockerTag: latest
+      DockerContext: ../modulo-notas
+      Dockerfile: Dockerfile
+
+  # Módulo de Notificaciones
+  NotificacionesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${Environment}-notificaciones"
+      PackageType: Image
+      ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/notas-venta-notificaciones:latest"
+      Environment:
+        Variables:
+          SES_SOURCE_EMAIL: !Ref SESSourceEmail
+      Policies:
+        - SESCrudPolicy:
+            IdentityName: !Ref SESSourceEmail
+        - CloudWatchPutMetricPolicy: {}
+      Events:
+        SNSEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref NotificacionesTopic
+      Tags:
+        Environment: !Ref Environment
+    Metadata:
+      DockerTag: latest
+      DockerContext: ../modulo-notificaciones
+      Dockerfile: Dockerfile
+
+  # ==================== CLOUDWATCH ALARMS ====================
+  
+  # Alerta de errores HTTP 5xx en módulo de catálogos
+  Catalogos5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Environment}-catalogos-5xx-errors"
+      AlarmDescription: "Alerta cuando hay más de 5 errores HTTP 5xx en 5 minutos"
+      MetricName: HTTPRequests5xx
+      Namespace: NotasVenta/Catalogos
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+        - Name: Service
+          Value: catalogos
+      TreatMissingData: notBreaching
+
+  # Alerta de latencia alta en creación de notas
+  NotasLatenciaAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Environment}-notas-high-latency"
+      AlarmDescription: "Alerta cuando la latencia de generación de notas supera 5 segundos"
+      MetricName: TiempoGeneracionNota
+      Namespace: NotasVenta/Notas
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+        - Name: Service
+          Value: notas-venta
+      TreatMissingData: notBreaching
+
+  # Alerta de errores en notificaciones
+  NotificacionesErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Environment}-notificaciones-errors"
+      AlarmDescription: "Alerta cuando hay errores en el envío de notificaciones"
+      MetricName: ErroresEnvio
+      Namespace: NotasVenta/Notificaciones
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+        - Name: Service
+          Value: notificaciones
+      TreatMissingData: notBreaching
+
+  # ==================== CLOUDWATCH DASHBOARD ====================
+  
+  NotasVentaDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${Environment}-notas-venta-dashboard"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 1,
+              "properties": {
+                "markdown": "# Dashboard Sistema de Notas de Venta - ${Environment}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 1,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Tiempo de Ejecución - Percentiles (Catálogos)",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  [ "NotasVenta/Catalogos", "ExecutionTime", "Environment", "${Environment}", "Service", "catalogos", { "stat": "p50", "label": "p50" } ],
+                  [ "...", { "stat": "p90", "label": "p90" } ],
+                  [ "...", { "stat": "p99", "label": "p99" } ]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 1,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Tiempo de Generación de Notas - Percentiles",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  [ "NotasVenta/Notas", "TiempoGeneracionNota", "Environment", "${Environment}", "Service", "notas-venta", { "stat": "p50", "label": "p50" } ],
+                  [ "...", { "stat": "p90", "label": "p90" } ],
+                  [ "...", { "stat": "p99", "label": "p99" } ]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 7,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "title": "Requests HTTP por Código - Catálogos",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  [ "NotasVenta/Catalogos", "HTTPRequests2xx", "Environment", "${Environment}", "Service", "catalogos", { "color": "#2ca02c", "label": "2xx Success" } ],
+                  [ ".", "HTTPRequests4xx", ".", ".", ".", ".", { "color": "#ff7f0e", "label": "4xx Client Error" } ],
+                  [ ".", "HTTPRequests5xx", ".", ".", ".", ".", { "color": "#d62728", "label": "5xx Server Error" } ]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8,
+              "y": 7,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "title": "Requests HTTP por Código - Notas",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  [ "NotasVenta/Notas", "HTTPRequests2xx", "Environment", "${Environment}", "Service", "notas-venta", { "color": "#2ca02c", "label": "2xx Success" } ],
+                  [ ".", "HTTPRequests4xx", ".", ".", ".", ".", { "color": "#ff7f0e", "label": "4xx Client Error" } ],
+                  [ ".", "HTTPRequests5xx", ".", ".", ".", ".", { "color": "#d62728", "label": "5xx Server Error" } ]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16,
+              "y": 7,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "title": "Notificaciones",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  [ "NotasVenta/Notificaciones", "CorreosEnviados", "Environment", "${Environment}", "Service", "notificaciones", { "color": "#2ca02c", "label": "Enviados" } ],
+                  [ ".", "ErroresEnvio", ".", ".", ".", ".", { "color": "#d62728", "label": "Errores" } ]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 13,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Operaciones CRUD - Catálogos",
+                "view": "timeSeries",
+                "stacked": true,
+                "metrics": [
+                  [ "NotasVenta/Catalogos", "ClientesCreados", "Environment", "${Environment}", "Service", "catalogos", { "label": "Clientes Creados" } ],
+                  [ ".", "ProductosCreados", ".", ".", ".", ".", { "label": "Productos Creados" } ],
+                  [ ".", "DomiciliosCreados", ".", ".", ".", ".", { "label": "Domicilios Creados" } ]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 13,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Notas y PDFs Generados",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [
+                  [ "NotasVenta/Notas", "NotasCreadas", "Environment", "${Environment}", "Service", "notas-venta", { "label": "Notas Creadas" } ],
+                  [ ".", "PDFGenerados", ".", ".", ".", ".", { "label": "PDFs Generados" } ],
+                  [ ".", "PDFDescargados", ".", ".", ".", ".", { "label": "PDFs Descargados" } ]
+                ],
+                "region": "${AWS::Region}",
+                "period": 60
+              }
+            }
+          ]
+        }
+
+Conditions:
+  HasApiBaseUrl: !Not [!Equals [!Ref ApiBaseUrl, ""]]
+
+Outputs:
+  ApiUrl:
+    Description: URL de la API
+    Value: !Sub "https://${NotasVentaApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+  
+  CatalogosFunctionArn:
+    Description: ARN de la función de catálogos
+    Value: !GetAtt CatalogosFunction.Arn
+  
+  NotasFunctionArn:
+    Description: ARN de la función de notas
+    Value: !GetAtt NotasFunction.Arn
+  
+  NotificacionesFunctionArn:
+    Description: ARN de la función de notificaciones
+    Value: !GetAtt NotificacionesFunction.Arn
+  
+  S3BucketName:
+    Description: Nombre del bucket S3 para PDFs
+    Value: !Ref NotasPDFBucket
+  
+  SNSTopicArn:
+    Description: ARN del topic SNS
+    Value: !Ref NotificacionesTopic
+  
+  DashboardUrl:
+    Description: URL del dashboard de CloudWatch
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${Environment}-notas-venta-dashboard"

@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  catalogos-api:
+    build: .
+    ports:
+      - "8001:8080"
+    environment:
+      - ENVIRONMENT=local
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - TABLE_CLIENTES=clientes-local
+      - TABLE_DOMICILIOS=domicilios-local
+      - TABLE_PRODUCTOS=productos-local
+    volumes:
+      - ./src:/var/task:ro
+    networks:
+      - notas-venta-network
+
+  # DynamoDB Local para desarrollo
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    ports:
+      - "8000:8000"
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath /home/dynamodblocal"
+    volumes:
+      - dynamodb-data:/home/dynamodblocal
+    networks:
+      - notas-venta-network
+
+networks:
+  notas-venta-network:
+    driver: bridge
+
+volumes:
+  dynamodb-data:

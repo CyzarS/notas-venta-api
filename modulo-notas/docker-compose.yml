@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  notas-api:
+    build: .
+    ports:
+      - "8002:8080"
+    environment:
+      - ENVIRONMENT=local
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - EXPEDIENTE=${EXPEDIENTE:-A01234567}
+      - S3_BUCKET=${S3_BUCKET:-A01234567-esi3898k-examen1}
+      - SNS_TOPIC_ARN=${SNS_TOPIC_ARN}
+      - API_BASE_URL=${API_BASE_URL:-http://localhost:8002}
+      - TABLE_NOTAS=notas-venta-local
+      - TABLE_CONTENIDO_NOTAS=contenido-notas-local
+      - TABLE_CLIENTES=clientes-local
+      - TABLE_DOMICILIOS=domicilios-local
+      - TABLE_PRODUCTOS=productos-local
+    volumes:
+      - ./src:/var/task:ro
+    networks:
+      - notas-venta-network
+
+networks:
+  notas-venta-network:
+    external: true

@@ -109,14 +109,29 @@ jobs:
         run: |
           BUCKET_NAME="${{ secrets.EXPEDIENTE }}-lambda-code"
           
+          # Verificar que el bucket existe
+          if ! aws s3 ls s3://$BUCKET_NAME 2>/dev/null; then
+            echo "❌ Error: El bucket $BUCKET_NAME no existe."
+            echo ""
+            echo "Asegúrate de:"
+            echo "1. Ejecutar primero el workflow 'Deploy Infrastructure (AWS Academy)'"
+            echo "2. Usar el MISMO valor de expediente en ambos workflows"
+            echo "3. Verificar que secrets.EXPEDIENTE sea correcto"
+            exit 1
+          fi
+          
           # Subir nuevo código
+          echo "☁️ Subiendo código a S3..."
           aws s3 cp modulo-notas/lambda-package.zip s3://$BUCKET_NAME/notas-lambda.zip
+          echo "✅ Código subido a s3://$BUCKET_NAME/notas-lambda.zip"
           
           # Actualizar Lambda
+          echo "🚀 Actualizando función Lambda..."
           aws lambda update-function-code \
             --function-name ${{ env.FUNCTION_NAME }} \
             --s3-bucket $BUCKET_NAME \
             --s3-key notas-lambda.zip
+          echo "✅ Función Lambda actualizada"
 
       - name: Esperar actualización
         run: |

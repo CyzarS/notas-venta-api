@@ -103,23 +103,57 @@ jobs:
           cd ../..
           echo "✅ notificaciones-lambda.zip creado ($(du -h notificaciones-lambda.zip | cut -f1))"
 
-      - name: Crear bucket S3 para código
+      - name: Crear bucket S3 para código y subir código
         run: |
           BUCKET_NAME="${{ github.event.inputs.expediente }}-lambda-code"
-          aws s3 mb s3://$BUCKET_NAME --region ${{ env.AWS_REGION }} 2>/dev/null || echo "Bucket ya existe"
-          echo "BUCKET_NAME=$BUCKET_NAME" >> $GITHUB_ENV
-
-      - name: Subir código a S3
-        run: |
+          
+          # Crear el bucket (con manejo de error mejorado)
+          echo "📦 Creando bucket S3: s3://$BUCKET_NAME"
+          if aws s3 ls s3://$BUCKET_NAME 2>/dev/null; then
+            echo "✅ Bucket ya existe"
+          else
+            echo "🆕 Creando nuevo bucket..."
+            aws s3 mb s3://$BUCKET_NAME --region ${{ env.AWS_REGION }}
+            echo "✅ Bucket creado exitosamente"
+          fi
+          
+          # Verificar acceso al bucket
+          echo ""
+          echo "🔍 Verificando permisos del bucket..."
+          if aws s3 ls s3://$BUCKET_NAME --max-items 1 2>&1 | grep -q "NoSuchBucket\|AccessDenied"; then
+            echo "❌ ERROR: Problema con el bucket"
+            aws s3 ls s3://$BUCKET_NAME --max-items 1 2>&1
+            echo ""
+            echo "📋 Diagnostico:"
+            echo "  - Region: ${{ env.AWS_REGION }}"
+            echo "  - Bucket: $BUCKET_NAME"
+            echo "  - Expediente: ${{ github.event.inputs.expediente }}"
+            exit 1
+          fi
+          echo "✅ Acceso confirmado"
+          
+          # Subir código a S3
+          echo ""
           echo "☁️ Subiendo código a S3..."
-          aws s3 cp catalogos-lambda.zip s3://$BUCKET_NAME/
-          aws s3 cp notas-lambda.zip s3://$BUCKET_NAME/
-          aws s3 cp notificaciones-lambda.zip s3://$BUCKET_NAME/
-          echo "✅ Código subido a s3://$BUCKET_NAME/"
+          aws s3 cp catalogos-lambda.zip s3://$BUCKET_NAME/catalogos-lambda.zip
+          echo "✅ catalogos-lambda.zip subido"
+          
+          aws s3 cp notas-lambda.zip s3://$BUCKET_NAME/notas-lambda.zip
+          echo "✅ notas-lambda.zip subido"
+          
+          aws s3 cp notificaciones-lambda.zip s3://$BUCKET_NAME/notificaciones-lambda.zip
+          echo "✅ notificaciones-lambda.zip subido"
+          
+          echo ""
+          echo "✅ Código subido exitosamente a s3://$BUCKET_NAME/"
+          
+          # Guardar nombre del bucket para pasos siguientes
+          echo "BUCKET_NAME=$BUCKET_NAME" >> $GITHUB_ENV
 
       - name: Deploy CloudFormation Stack
         run: |
           echo "🚀 Desplegando infraestructura..."
+          BUCKET_NAME="${{ github.event.inputs.expediente }}-lambda-code"
           aws cloudformation deploy \
             --template-file infrastructure/template-academy.yaml \
             --stack-name notas-venta-stack \
